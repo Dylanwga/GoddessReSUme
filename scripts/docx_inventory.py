@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 import posixpath
+import re
 from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 import zipfile
@@ -20,6 +21,9 @@ NS = {
     "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
     "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+    "wpg": "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
+    "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
     "v": "urn:schemas-microsoft-com:vml",
     "o": "urn:schemas-microsoft-com:office:office",
 }
@@ -210,13 +214,202 @@ def summarize_structure(result):
     }
 
 
+def numeric_attributes(element):
+    """Retain unusual values instead of making this inventory an XML validator."""
+    if element is None:
+        return {}
+    return {local(key): int(value) if re.fullmatch(r"-?\d+", value) else value
+            for key, value in element.attrib.items()}
+
+
+def drawing_geometry(properties, in_group):
+    transform = properties.find(q("a", "xfrm")) if properties is not None else None
+    result = {"coordinate_space": "group" if in_group else "drawing",
+              "transform_attributes": numeric_attributes(transform)}
+    for source, target in (("off", "offset_emu"), ("ext", "extent_emu"),
+                           ("chOff", "child_offset_emu"), ("chExt", "child_extent_emu")):
+        result[target] = numeric_attributes(transform.find(q("a", source))
+                                             if transform is not None else None)
+    return result
+
+
+def drawing_fill(properties):
+    if properties is not None:
+        for child in properties:
+            if local(child.tag) in {"noFill", "solidFill", "gradFill", "blipFill",
+                                   "pattFill", "grpFill"}:
+                return {"kind": local(child.tag), "values": [
+                    {"kind": local(item.tag), "attributes": dict(item.attrib)}
+                    for item in child.iter() if item is not child]}
+    # An absent fill can be inherited from a style; it is not proof of transparency.
+    return {"kind": "unspecified", "values": []}
+
+
+def drawing_role(name, object_type, parent_role, has_text, fill_kind, preset):
+    """Names are labels, not evidence that the named structure is actually present."""
+    name = name or ""
+    if object_type != "group":
+        for role, endings in {
+            "background": ("-background", "-底色框"),
+            "text": ("-text", "-文字框"),
+            "icon": ("-icon", "-图标"),
+            "title": ("-title", "标题"),
+            "rule": ("-rule", "全宽粗横线"),
+        }.items():
+            if name.endswith(endings):
+                return role, "name"
+    match = re.match(r"^([a-z][a-z0-9_]*)-\d+$", name)
+    if match and (object_type == "group" or parent_role is None):
+        return match.group(1), "name"
+    if parent_role == "institution":
+        if object_type == "picture":
+            return "icon", "parent_role_and_structure"
+        if object_type == "shape" and has_text:
+            return "text", "parent_role_and_structure"
+        if object_type == "shape" and preset == "rect" and fill_kind == "solidFill":
+            return "background", "parent_role_and_structure"
+    if parent_role == "section" and object_type == "shape":
+        if has_text:
+            return "title", "parent_role_and_structure"
+        if preset in {"rect", "line"}:
+            return "rule", "parent_role_and_structure"
+    return None, "unclassified"
+
+
+def group_observations(group, children):
+    """Report separately inspectable XML facts, never a layout pass/fail verdict."""
+    def one(role):
+        found = [child for child in children if child["role"] == role]
+        return found[0] if len(found) == 1 else None
+
+    def fact(item, predicate):
+        return predicate(item) if item is not None else None
+
+    if group["role"] == "institution":
+        background, text, icon = (one(role) for role in ("background", "text", "icon"))
+        return {
+            "has_separate_background_and_text": (
+                background is not None and background["object_type"] == "shape"
+                and text is not None and text["object_type"] == "shape" and text["textbox_count"] == 1),
+            "has_independent_picture": icon is not None and icon["object_type"] == "picture",
+            "background_has_no_text": fact(background, lambda x: not x["has_text"] and x["textbox_count"] == 0),
+            "background_is_rectangle": fact(background, lambda x: x["object_type"] == "shape" and x["preset_geometry"] == "rect"),
+            "background_has_solid_fill": fact(background, lambda x: x["fill"]["kind"] == "solidFill"),
+            "text_has_explicit_no_fill": fact(text, lambda x: x["fill"]["kind"] == "noFill"),
+            "text_has_center_anchor": fact(text, lambda x: x["vertical_anchor"] == "ctr"),
+            "text_has_no_inline_pictures": fact(text, lambda x: x["inline_picture_count"] == 0),
+        }
+    if group["role"] == "section":
+        title, rule = one("title"), one("rule")
+        def spans_width(item):
+            geometry, frame = item["geometry"], group["geometry"]
+            width = frame["child_extent_emu"].get("cx")
+            left = frame["child_offset_emu"].get("x")
+            if width is None or left is None:
+                return None
+            return geometry["extent_emu"].get("cx") == width and geometry["offset_emu"].get("x") == left
+        return {
+            "has_separate_title_and_rule": (
+                title is not None and title["object_type"] == "shape" and title["textbox_count"] == 1
+                and rule is not None and rule["object_type"] == "shape"),
+            "title_has_text": fact(title, lambda x: x["has_text"]),
+            "rule_has_no_text": fact(rule, lambda x: not x["has_text"] and x["textbox_count"] == 0),
+            "rule_spans_group_width": fact(rule, spans_width),
+        }
+    return {}
+
+
+def collect_drawing_structure(root, part, result):
+    """Add modern DrawingML object records without changing legacy text contexts."""
+    objects = result["drawing_objects"]
+    groups = {item["object_id"]: item for item in result["native_groups"]}
+    group_tags = {q("wpg", "wgp"), q("wpg", "grpSp")}
+
+    def visit(node, wrapper=None, parent_group_id=None, parent_object_id=None):
+        if node.tag in {q("wp", "anchor"), q("wp", "inline")}:
+            wrapper = node
+            parent_group_id = None
+        kind = ("group" if node.tag in group_tags else
+                "shape" if node.tag == q("wps", "wsp") else
+                "picture" if node.tag == q("pic", "pic") else None)
+        if kind:
+            dp = wrapper.find(q("wp", "docPr")) if wrapper is not None else None
+            property_paths = {
+                "group": ("wpg:cNvPr", "wpg:grpSpPr"),
+                "shape": ("wps:cNvPr", "wps:spPr"),
+                "picture": ("pic:nvPicPr/pic:cNvPr", "pic:spPr"),
+            }
+            identity_path, properties_path = property_paths[kind]
+            identity, properties = node.find(identity_path, NS), node.find(properties_path, NS)
+            # Only the wrapper's root object inherits its visible anchor name.
+            identity = identity if identity is not None else dp if parent_object_id is None else None
+            name = identity.get("name") if identity is not None else None
+            textboxes = list(node.iter(q("w", "txbxContent"))) if kind == "shape" else []
+            has_text = any(text_of(p).strip() for box in textboxes for p in box.iter(q("w", "p")))
+            body = node.find("wps:bodyPr", NS) if kind == "shape" else None
+            preset = properties.find(q("a", "prstGeom")) if properties is not None else None
+            preset = preset.get("prst") if preset is not None else None
+            fill = drawing_fill(node if kind == "picture" else properties)
+            parent_role = groups[parent_group_id]["role"] if parent_group_id else None
+            role, role_source = drawing_role(name, kind, parent_role, has_text, fill["kind"], preset)
+            item = {
+                "part": part, "object_id": f"{part}#drawing-{len(objects) + 1}",
+                "object_type": kind, "name": name, "role": role, "role_source": role_source,
+                "xml_id": identity.get("id") if identity is not None else None,
+                "parent_group_id": parent_group_id, "parent_object_id": parent_object_id,
+                "anchor_id": dp.get("id") if dp is not None else None,
+                "geometry": drawing_geometry(properties, parent_group_id is not None),
+                "preset_geometry": preset, "fill": fill,
+                "has_text": has_text, "textbox_count": len(textboxes),
+                "vertical_anchor": body.get("anchor") if body is not None else None,
+                "body_properties": dict(body.attrib) if body is not None else {},
+                "inline_picture_count": sum(len(list(inline.iter(q("pic", "pic"))))
+                                            for inline in node.iter(q("wp", "inline"))) if kind == "shape" else 0,
+            }
+            objects.append(item)
+            if parent_group_id:
+                groups[parent_group_id]["child_object_ids"].append(item["object_id"])
+            parent_object_id = item["object_id"]
+            if kind == "group":
+                item["child_object_ids"] = []
+                groups[item["object_id"]] = item
+                result["native_groups"].append(item)
+                parent_group_id = item["object_id"]
+            else:
+                parent_group_id = None
+        for child in node:
+            visit(child, wrapper, parent_group_id, parent_object_id)
+
+    visit(root)
+    index = {item["object_id"]: item for item in objects}
+    for group in result["native_groups"]:
+        group["structure_observations"] = group_observations(
+            group, [index[key] for key in group["child_object_ids"]])
+
+
+def summarize_drawings(result):
+    return {
+        "native_group_count": len(result["native_groups"]),
+        "groups_by_role": dict(Counter(item["role"] or "unclassified" for item in result["native_groups"])),
+        "objects_by_type": dict(Counter(item["object_type"] for item in result["drawing_objects"])),
+        "limitations": [
+            "Records describe the selected MC and accepted-revision DrawingML view; VML remains in vml_shapes.",
+            "Roles come from names or parent-role/type inference; structure_observations independently describe the XML.",
+            "Group coordinates are local EMUs; transforms, nested scaling, rotation, styles, and font metrics require separate interpretation.",
+            "Absent fills and body anchors are unspecified, not proof of transparency or alignment; missing required observations are null.",
+            "Centered anchors, separate objects, and full-width geometry do not prove visual centering, movability in an application, visibility, or good layout.",
+            "No structure or visual acceptance verdict is produced. Render every final page and review it separately.",
+        ],
+    }
+
+
 def inventory(filename):
     path = Path(filename).expanduser().resolve()
     raw = path.read_bytes()
     result = {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
               "paragraphs": [], "hyperlinks": [], "images": [], "anchors": [],
               "vml_shapes": [], "math": [], "alternate_content": [], "warnings": [],
-              "textboxes": []}
+              "textboxes": [], "drawing_objects": [], "native_groups": []}
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         names = set(archive.namelist())
         package_rels = relationships(archive, "")
@@ -240,6 +433,7 @@ def inventory(filename):
                 raise InventoryError(f"Unsupported story root in {part}: {root.tag}")
             rels = relationships(archive, part)
             root = accepted_view(root, scopes, part, result["alternate_content"])
+            collect_drawing_structure(root, part, result)
             for rel in rels.values():
                 if not rel["external"] and rel["type"].rsplit("/", 1)[-1] in {
                     "header", "footer", "footnotes", "endnotes"
@@ -325,6 +519,7 @@ def inventory(filename):
             walk(root, {"story": story, "container": "body", "in_table": False,
                         "textbox_id": None})
     result["structure_summary"] = summarize_structure(result)
+    result["drawing_structure_summary"] = summarize_drawings(result)
     result["counts"] = {key: len(result[key]) for key in (
         "paragraphs", "hyperlinks", "images", "anchors", "vml_shapes", "math", "textboxes")}
     result["warnings"] = sorted(set(result["warnings"]))

@@ -1,94 +1,78 @@
 # GoddessReSUme
 
-用于中文技术与科研简历的可复用 Codex skill，同时优化专业表达和 Word 格式排版。
+中文技术与科研简历 skill：组织真实经历，生成可逐段编辑的 Word，并独立验收内容、对象结构和页面效果。
 
-## 能做什么
+## 工作方式
 
-- **经历专业化**：组织业务背景、技术难点、个人职责和成果；根据已确认事实明确项目 Owner 的责任范围。
-- **字体与字号对齐**：按唯一的 [版式规范](references/style-spec.md) 写入中西文字体和字号层级，并检查渲染时的字体替代。
-- **逐段独立文本框**：每个标题、正文段落、项目符号条目和论文条目分别成框，可单独移动；机构抬头与图标、条带保持合理分组。
-- **全宽栏目横线**：栏目标题下方配粗横线，横贯正文版心并与机构条带左右对齐，随标题文本框移动。
-- **从经历图标取色**：选择一段经历的图标作为全篇主题来源，派生标题深色与条带浅色。
-- **查找并嵌入图标**：即使只有经历文字，也为实际学校、任职机构和联系平台搜索官方图标、下载验证后嵌入；不将个人项目误当任职机构。
-- **原生组件构建**：附带 Word 构建模块，复用字体、逐段文本框、原生两级编号、整条机构抬头和链接，减少每次从头实现的偏差。
-- **局部精修与补漏**：尊重最新手工修改，支持恢复缺失内容、补充图标、调整联系方式，并核对文字与版面。
+**第一部分：流程。** 内容撰写梳理项目背景、真实 Owner 职责、技术工作与成果；排版格式获取图标、确定主题、构建原生对象，再按内容调整间距和分页。
 
-只改一句话时直接提供文案；整份 Word 简历润色、完整优化或生成时，同时执行字体写入、逐段拆框与内容检查。用户明确要求保留格式或只改局部时遵守其范围。专业化表达以已有事实为依据，不编造职责、指标或成果。
+**第二部分：验收。** 对照事实与同一份版式规范，分别检查文字、对象和全部渲染页面。保存成功不能代替视觉检查，用户在目标应用中发现的显示问题需要实际处理。
 
-## 两部分结构
+具体规则集中在 [版式规范](references/style-spec.md)：
 
-### 一、流程
+- 中文楷体，西文及数字 Times New Roman；主题色来自选定经历的图标。
+- 每个逻辑段落独立文本框；框高随实际内容变化。
+- 栏目标题与正文等宽粗横线组成局部原生组。
+- 机构抬头由**底色矩形、独立图标和透明文字框**组成，文字垂直居中，各对象可分别编辑，整条可一起移动。
+- 项目 GitHub 图标和链接与小标题同行、靠右；与页首个人 GitHub 分开处理。
+- 按需要安排教育介绍、可编辑填写位和联系方式下的技术栈。
 
-- **内容撰写**：提取事实、明确真实责任、组织专业表述、处理缺项，再交出内容单元。
-- **排版与格式**：获取图标与取色、应用原生组件、调整框高和分页、渲染全部页面。
+已确认的 Owner 身份会明确写出。公开仓库的功能不等同于个人贡献；不新增未经支持的指标、工作、熟练度或落地结论。局部任务尊重最新文件及保留范围。
 
-两块共享内容依据、版式依据和修改范围。文字决定对象与页面容量；需要精简时回到内容流程，保留事实与贡献。
+## 安装与使用
 
-### 二、验收
-
-分别核对内容、格式与对象结构、逐页视觉和可用性。每项有证据与返修去向，区分通过、不通过、未验证和不适用；工具运行成功不等于成稿通过。
-
-流程与验收共同引用一份版式规范。图标获取、构建接口和 Word 精修是按需读取的技术参考，避免在各文件重复维护字号和配色。
-
-## 安装
-
-将仓库克隆到 Codex 的个人 skills 目录。默认位置如下；如果已设置 `CODEX_HOME`，请使用对应目录。
+将完整仓库放入 Codex 的个人 skills 目录。默认安装位置：
 
 ```sh
 git clone https://github.com/Dylanwga/GoddessReSUme.git ~/.codex/skills/goddessresume
 ```
 
-已有同名目录时先检查内容，避免覆盖本地修改。展示名称为 **GoddessReSUme**；内部标识遵循 skill 的小写命名规范，安装后在新会话中使用 `$goddessresume`。
-
-## 使用示例
+若设置了 `CODEX_HOME`，使用对应目录；已有同名目录时先保留本地修改。展示名称是 **GoddessReSUme**，调用名为 `$goddessresume`。
 
 ```text
-使用 $goddessresume 优化这份简历：专业化改写实习和科研经历，
-保留事实与指标，按内置版式统一排版，并从最新实习经历的图标选择主题色。
+使用 $goddessresume，根据这些经历制作 Word 简历。
+明确项目 Owner 的真实职责，保留独立项目背景；
+采用内置字体、分层机构条带和逐段文本框，项目仓库放在小标题右侧。
 ```
 
 ```text
-使用 $goddessresume，只修改指定经历，明确我作为项目 Owner 的职责，
-保留其他部分的内容与位置。
+使用 $goddessresume，只调整这份最新简历的机构抬头，
+将底色、文字和图标分开并垂直居中，保留其他内容和位置。
 ```
 
-```text
-使用 $goddessresume，在 GitHub 链接前补一个图标，保持原链接和其他排版。
-```
-
-请提供完整 skill 文件夹，包含 `assets`、`references` 和 `scripts`。完整生成依次处理实际内容与缺失字段、图标获取与取色、组件构建与分页、结构与逐页渲染；缺少主页或照片时默认省略，不把示例占位文字带入成稿。
-
-Word 文件处理需要可用的 DOCX 编辑、字体和渲染能力；若环境提供 documents 技能，可配合使用。构建模块依赖 `python-docx` 和 `lxml`，用法见 [组件构建](references/construction.md)。它不自动测量文本或分页，仍须按内容调整高度并渲染。清点脚本仅依赖 Python 标准库，可检查 OOXML 文本、对象与链接；它不验证字体，也不能替代视觉检查。
+使用完整文件夹，包括 `references`、`scripts` 和 `assets`。构建器依赖 `python-docx` 与 `lxml`；样例重建另需 Pillow。结构清点仅需 Python 标准库。字体和 DOCX 渲染器须在执行环境可用；若提供 documents 技能，可采用其渲染流程。构建器的高度估算不能替代渲染，也不会从仓库自动推断候选人的个人能力。
 
 ## 版式预览
 
-当前预览：**全宽栏目粗横线版**。点击图片可查看大图。
+样例从空白文档生成；身份、机构、经历、论文、日期和标识均为虚构，照片使用原生占位框。图标仅演示位置和分层，正式简历应取得对应机构及平台的真实图标。两页用于展示不同内容类型，不规定最终简历页数。
 
-以下样例从空白文档重建，身份、机构、经历、论文及日期均为虚构，照片为原生占位框。蓝色仅演示图标取色规则；实际简历按选定经历的图标配色。
-
+<!-- reference-previews:start -->
 | 第 1 页 | 第 2 页 |
 | --- | --- |
-| ![脱敏版式示例，第 1 页](assets/layout-page-1-21474b52.png) | ![脱敏版式示例，第 2 页](assets/layout-page-2-9f46c32e.png) |
+| ![虚构样例第 1 页](assets/layout-page-1-d7b5aec1.png) | ![虚构样例第 2 页](assets/layout-page-2-acc2ecc8.png) |
+<!-- reference-previews:end -->
 
-[下载可编辑的脱敏 Word 样例](assets/layout-reference.docx)
+[查看可编辑的虚构样例](assets/layout-reference.docx)
 
-## 文件说明
+## 文件分工
 
-| 文件 | 用途 |
+| 文件 | 职责 |
 | --- | --- |
-| [SKILL.md](SKILL.md) | 两部分入口、任务范围和流程衔接 |
-| [references/workflow-content.md](references/workflow-content.md) | 内容撰写流程、Owner 边界与技术表达示例 |
-| [references/workflow-layout.md](references/workflow-layout.md) | 排版与格式流程、局部路径和渲染交接 |
-| [references/acceptance.md](references/acceptance.md) | 独立验收、检查证据、清点工具与返修规则 |
-| [references/style-spec.md](references/style-spec.md) | 唯一版式参数：字体、配色、尺寸、对象结构与脱敏参考 |
-| [references/word-editing.md](references/word-editing.md) | 最新 DOCX 的局部精修与 OOXML 操作 |
-| [references/icons.md](references/icons.md) | 图标的官方搜索、下载、验证、嵌入与缺失处理 |
-| [references/construction.md](references/construction.md) | 原生 Word 组件 API、输入与能力边界 |
-| [scripts/docx_components.py](scripts/docx_components.py) | 独立文本框、机构条带、编号和图标链接构建模块 |
-| [scripts/docx_inventory.py](scripts/docx_inventory.py) | 只读 DOCX 内容与对象清点工具 |
-| [agents/openai.yaml](agents/openai.yaml) | Codex 展示名称和默认调用提示 |
+| [SKILL.md](SKILL.md) | 流程与验收入口、任务范围 |
+| [内容流程](references/workflow-content.md) | 事实、责任边界、专业表达与内容单元 |
+| [排版流程](references/workflow-layout.md) | 图标、组件、布局、分页与渲染 |
+| [版式规范](references/style-spec.md) | 唯一的字体、颜色、对象和几何依据 |
+| [验收规则](references/acceptance.md) | 内容、结构、视觉的通过条件与返修 |
+| [组件接口](references/construction.md) | 原生组件 API 与能力边界 |
+| [图标获取](references/icons.md) | 检索、下载、核验和嵌入 |
+| [Word 精修](references/word-editing.md) | 保留最新编辑状态的局部操作 |
+| [构建器](scripts/docx_components.py) | 从空白 Word 构建文字框与局部组 |
+| [清点工具](scripts/docx_inventory.py) | 只读检查文字、关系、对象及组内结构 |
+| [样例构建](scripts/build_reference.py) | 用虚构资料从空白重建参考 Word |
 
 ```sh
-python scripts/docx_inventory.py /path/to/resume.docx
-python scripts/docx_inventory.py /path/to/before.docx --compare /path/to/after.docx
+python scripts/docx_inventory.py resume.docx
+python scripts/docx_inventory.py before.docx --compare after.docx
 ```
+
+修改组件或默认版式时，同时重建虚构样例、重新渲染预览并检查全部页面。用户原件、截图、正式输出和私人 QA 材料不进入仓库。
