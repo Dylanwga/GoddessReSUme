@@ -16,6 +16,7 @@ import tempfile
 import zipfile
 from lxml import etree
 from PIL import Image, ImageDraw
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx_components import ResumeBuilder
 
 
@@ -90,7 +91,7 @@ def clean_package(path):
             archive.writestr(name, data)
 
 
-def build(output, *, manifest=None, metrics=None):
+def build(output, *, manifest=None, metrics=None, body_align='left'):
     """Build a single fictional page; optional metrics tighten body frames.
 
     Measurements are reused only when the complete rendered text still matches.
@@ -159,18 +160,16 @@ def build(output, *, manifest=None, metrics=None):
             ('atlasflow', 'AtlasFlow：研发任务协作平台（虚构）', [
                 ('background', '项目背景：', '面向跨角色研发任务中信息分散、状态难以同步和交接成本高的问题，构建连接任务拆解、执行跟踪与结果归档的协作工作流。', 34.2),
                 ('responsibility', '项目职责：', '作为项目 Owner，负责流程建模与服务接口设计，拆解客户端和执行服务的接口边界，组织联调与异常场景验收。', 34.2),
-                ('technical', '执行编排：', '以任务状态机串联规划、执行和复核环节，通过消息事件传递进度与执行结果；对中断任务保留检查点，支持恢复后继续执行。', 34.2),
-                ('technical', '接口设计：', '使用 Python 与 FastAPI 封装任务及工具接口，以统一标识关联输入、执行日志和产物；为客户端提供状态查询及结果回溯能力。', 34.2),
-                ('technical', '质量验证：', '建立固定任务集与失败分类，覆盖超时重试、重复事件和中断恢复；对照预期状态检查执行链路，并以日志定位交接环节的问题。', 34.2),
+                ('technical', '任务状态与失败恢复：', '针对超时重试、重复回调和阶段失败造成的状态不一致，以任务标识关联执行记录，先核对事件是否处理，再按允许的迁移推进任务，避免重复通知再次触发已完成阶段。失败时保留阶段产物与检查点，从最近成功阶段之后继续执行。通过重复回调、回调迟到和中断恢复样例，逐项核对状态迁移与产物引用，检查是否重复执行或丢失历史结果。', 69.8),
+                ('technical', '接口契约与结果追溯：', '围绕客户端、任务服务与执行器之间的交接，使用 FastAPI 定义任务创建、阶段回调和结果查询接口，以任务标识、阶段编号及产物位置建立统一的数据契约。将失败状态与执行日志关联返回，使调用方可区分尚未完成与执行失败，并沿同一标识定位对应阶段和复现输入。', 52),
                 ('result', '项目产出：', '交付可运行原型、接口说明与复现脚本；将联调中的失败样例沉淀为回归用例，为接入新工具和迭代流程提供可重复的验收基线。', 34.2),
             ]),
             ('tracenest', 'TraceNest：安全事件关联工具（虚构）', [
                 ('background', '项目背景：', '针对告警上下文分散、重复人工检索和证据交接困难的问题，聚合主机与网络事件，为分析人员提供可追溯的事件调查视图。', 34.2),
                 ('responsibility', '项目职责：', '作为项目 Owner，负责事件模型、关联接口与分析页面的设计，明确证据保留要求，组织端到端联调及边界条件验证。', 34.2),
-                ('technical', '事件接入：', '使用 Go 接入事件流，通过 Kafka 处理异步消息；统一时间、主体和来源字段，以关联标识连接原始记录、检索结果与调查对象。', 34.2),
-                ('technical', '证据呈现：', '以 React 构建事件时间线和证据详情页，将分析结论与对应来源一并展示；保留查询条件和原始记录入口，便于复核关联依据。', 34.2),
-                ('technical', '工程验证：', '针对迟到消息、重复事件和缺失字段构造测试样例，核对检索结果及页面展示的一致性；整理异常处理规则与数据接入约束。', 34.2),
-                ('result', '项目产出：', '完成事件检索与证据回溯原型，提交数据接入说明和可复现验证样例；以事件时间线串联调查过程，支持分析人员复核证据及交接结论。', 34.2),
+                ('technical', '事件归一化与重复输入：', '针对不同来源的时间、主体及事件标识不一致，使用 Go 统一字段并保留原始记录位置，经 Kafka 向检索侧传递标准事件。以来源标识关联归一化结果和调查对象，结合重复、迟到与缺失字段样例核对记录及检索展示，避免清洗后丢失回溯依据。', 52),
+                ('technical', '调查证据与来源关联：', '通过 React 时间线组织调查记录，将结论与对应原始事件、查询条件一起呈现。复核时可沿来源标识返回证据记录，区分当前分析结论与原始事实，支持调查过程交接。', 34.2),
+                ('result', '项目产出：', '交付事件检索与证据回溯原型，并整理字段映射、异常处理约定及验证样例，供新增来源按统一接口接入。', 34.2),
             ]),
         ]
         previous = band
@@ -182,6 +181,8 @@ def build(output, *, manifest=None, metrics=None):
             for kind, label, text, initial_height in points:
                 block = b.add_project_point(kind, text, label=label,
                     y=previous.next_y(.5), height=initial_height)
+                block.paragraph.alignment = (WD_ALIGN_PARAGRAPH.LEFT if body_align == 'left'
+                                             else WD_ALIGN_PARAGRAPH.JUSTIFY)
                 block.metadata['group_id'] = slug
                 previous = tighten(block)
         report = b.validate()
@@ -199,5 +200,7 @@ if __name__ == '__main__':
     parser.add_argument('output', nargs='?', type=Path, default=Path(__file__).resolve().parents[1] / 'assets/layout-reference.docx')
     parser.add_argument('--manifest', type=Path, help='Export frame geometry and complete text for rendered measurement')
     parser.add_argument('--metrics', type=Path, help='Use matching previous-render measurements to tighten body frames')
+    parser.add_argument('--body-align', choices=('left', 'both'), default='left',
+                        help='Sample body alignment; left avoids verified LibreOffice justified-punctuation clipping')
     args = parser.parse_args()
-    build(args.output, manifest=args.manifest, metrics=args.metrics)
+    build(args.output, manifest=args.manifest, metrics=args.metrics, body_align=args.body_align)

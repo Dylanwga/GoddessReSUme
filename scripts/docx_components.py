@@ -34,6 +34,8 @@ SIZES = {"name": 20, "section": 14, "institution": 11, "contact": 11}
 MIN_HEIGHTS = {"name": 36, "section": 26, "institution": 26, "project": 24,
                "project_header": 24, "contact": 22, "tech_stack": 22}
 GAPS = {"within_project": .5, "between_projects": 7, "between_sections": 10}
+TEXT_LANGUAGE = "en-US"
+EAST_ASIA_LANGUAGE = "zh-CN"
 
 
 def _element(tag, attributes=None, parent=None):
@@ -71,6 +73,31 @@ def _number(value, name, *, positive=False):
 
 def _emu(value):
     return round(value * 12700)
+
+
+def _text_language(rpr):
+    """Do not inherit the blank template's en-US East Asian language."""
+    _child(rpr, "w:lang", val=TEXT_LANGUAGE, eastAsia=EAST_ASIA_LANGUAGE)
+
+
+def _line_break_rules(ppr):
+    """Chinese punctuation rules plus word-level Latin wrapping.
+
+    In WordprocessingML wordWrap=off permits character-level Latin breaks;
+    keep it on. Disable hanging punctuation at a textbox's clipping boundary.
+    These settings do not insert breaks or change bullet indents.
+    """
+    successors = ("w:overflowPunct", "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN",
+                  "w:bidi", "w:adjustRightInd", "w:snapToGrid", "w:spacing", "w:ind",
+                  "w:contextualSpacing", "w:mirrorIndents", "w:suppressOverlap", "w:jc",
+                  "w:textDirection", "w:textAlignment", "w:textboxTightWrap", "w:outlineLvl",
+                  "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr", "w:pPrChange")
+    for tag, following in (("w:kinsoku", ("w:wordWrap",) + successors),
+                           ("w:wordWrap", successors),
+                           ("w:overflowPunct", successors[1:])):
+        node = _child(ppr, tag, val=0 if tag == "w:overflowPunct" else 1)
+        ppr.remove(node)
+        ppr.insert_element_before(node, *following)
 
 
 def _pieces(value):
@@ -211,6 +238,13 @@ class ResumeBuilder:
         for key in ("ascii", "hAnsi", "cs"):
             fonts.set(qn("w:" + key), self.western_font)
         fonts.set(qn("w:eastAsia"), self.east_asia_font)
+        _text_language(normal.element.get_or_add_rPr())
+        _line_break_rules(normal.element.get_or_add_pPr())
+        defaults = _child(self.document.styles.element, "w:docDefaults")
+        _text_language(_child(_child(defaults, "w:rPrDefault"), "w:rPr"))
+        _line_break_rules(_child(_child(defaults, "w:pPrDefault"), "w:pPr"))
+        _child(self.document.settings.element, "w:themeFontLang",
+               val=TEXT_LANGUAGE, eastAsia=EAST_ASIA_LANGUAGE)
         for key in ("author", "last_modified_by", "title", "subject", "keywords", "comments", "category"):
             setattr(self.document.core_properties, key, "")
 
@@ -279,6 +313,7 @@ class ResumeBuilder:
         _child(rpr, "w:szCs", val=round(size * 2))
         if baseline:
             _child(rpr, "w:position", val=round(baseline * 2))
+        _text_language(rpr)
 
     def _image_size(self, path, height):
         _number(height, "icon_height", positive=True)
@@ -370,6 +405,7 @@ class ResumeBuilder:
             tab_set = _child(props, "w:tabs")
             for position, mode in tabs:
                 _element("w:tab", {"w:val": mode, "w:pos": round(position * 20)}, tab_set)
+        _line_break_rules(props)
         _child(props, "w:snapToGrid", val=0)
         _child(props, "w:spacing", before=0, after=0,
                line=round(line_height * 20) if line_height is not None else round(line_spacing * 240),
@@ -898,6 +934,19 @@ class ResumeBuilder:
                 raise ValueError(f"{block.role} requires one textbox containing one paragraph")
             if list(boxes[0].iter(qn("w:br"))):
                 raise ValueError("Manual line breaks cannot combine logical content units")
+            props = block.paragraph._p.get_or_add_pPr()
+            for tag, expected_values in (("w:kinsoku", {"1", "true", "on"}),
+                                         ("w:wordWrap", {"1", "true", "on"}),
+                                         ("w:overflowPunct", {"0", "false", "off"})):
+                rule = props.find(qn(tag))
+                if rule is None or rule.get(qn("w:val")) not in expected_values:
+                    raise ValueError(f"{block.role} requires explicit Chinese/Latin line-breaking rules ({tag})")
+            for run in block.paragraph._p.iter(qn("w:r")):
+                if run.find(qn("w:t")) is None:
+                    continue
+                language = run.find("./" + qn("w:rPr") + "/" + qn("w:lang"))
+                if language is None or language.get(qn("w:eastAsia")) != EAST_ASIA_LANGUAGE:
+                    raise ValueError(f"{block.role} requires explicit zh-CN East Asian text language")
             semantic_kind = block.metadata.get("semantic_kind")
             if semantic_kind:
                 expected_level = 1 if semantic_kind == "technical" else 0

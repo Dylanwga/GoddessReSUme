@@ -10,6 +10,9 @@ slot from substantive-content density, while still measuring its spacing.
 This read-only tool reports measurements and uncertainty, not visual approval.
 No manifest means body classification is unknown. Whitespace-only text, images,
 rules and frame bottoms never count as the last line of substantive content.
+Chinese line-break diagnostics inspect matched body lines only, preserving the
+extracted punctuation. They locate likely violations, not visual approval;
+unknown text coverage cannot establish that line breaks are clear.
 """
 
 import argparse
@@ -24,6 +27,10 @@ import xml.etree.ElementTree as ET
 BODY_ROLES = {"body", "bullet", "background", "owner", "education_detail",
               "education_placeholder", "citation"}
 BULLETS = {"•", "●", "▪", "◦", "‧", "\uf09f", "\uf0b7"}
+# Deliberately exclude ASCII punctuation and ambiguous straight quotes: this is
+# a conservative Chinese punctuation check, not English word-wrap validation.
+FORBIDDEN_LINE_START = set("，。、；：？！）］｝】〕〉》」』”’〗〙〛〞〟")
+FORBIDDEN_LINE_END = set("（［｛【〔〈《「『“‘〖〘〚〝")
 
 
 def _name(node):
@@ -212,6 +219,46 @@ def _generated_bullet(word, blocks):
     return False
 
 
+def _line_break_issues(lines, block):
+    """Locate forbidden edge characters in one fully matched body block.
+
+    line_number is one-based within the block's merged visual lines. Bounds
+    locate the whole extracted line, not the punctuation's exact raster pixels.
+    Do not normalize width: NFKC would erase fullwidth punctuation distinctions.
+    """
+    issues = []
+    for number, line in enumerate(lines, 1):
+        text = line["text"].strip()
+        # Separate native markers are already removed by complete-text matching.
+        # A marker may share one extracted word with the first body text instead.
+        if number == 1:
+            while text and text[0] in BULLETS:
+                text = text[1:].lstrip()
+        if not text:
+            continue
+        edges = []
+        if text[0] in FORBIDDEN_LINE_START:
+            edges.append(("forbidden_line_start", text[0]))
+        if number < len(lines) and text[-1] in FORBIDDEN_LINE_END:
+            edges.append(("forbidden_line_end", text[-1]))
+        for issue_type, character in edges:
+            issues.append({"block_id": block["id"], "page": block["page"],
+                           "line_number": number, "character": character,
+                           "issue_type": issue_type, "line_text": text,
+                           "line_bounds": {k: line[k] for k in ("xMin", "yMin", "xMax", "yMax")}})
+    return issues
+
+
+def _line_break_status(issues, known, applicable=True):
+    # A discovered issue remains useful even if other body text is unverified.
+    # An empty list alone never implies that unknown text has passed inspection.
+    if issues:
+        return "issues_detected"
+    if not known:
+        return "unknown"
+    return "no_issues_detected" if applicable else "not_applicable"
+
+
 def measure(pages, manifest=None, *, safe_bottom_margin=28.35, target_bottom_gap=(12, 28),
             max_body_gap=11, body_roles=None, geometry_tolerance=1, target_pages=1):
     """Return actual metrics; unknown/ambiguous matches cannot satisfy fill checks."""
@@ -266,6 +313,9 @@ def measure(pages, manifest=None, *, safe_bottom_margin=28.35, target_bottom_gap
             status = "matched"
         eligible = frame["role"] in body_roles
         substantive = eligible and not (frame.get("intentional_blank") or frame["role"] == "education_placeholder")
+        line_break_issues = _line_break_issues(lines, frame) if eligible and status == "matched" else []
+        line_break_status = (_line_break_status(line_break_issues, status in {"matched", "intentional_blank"},
+                                                status == "matched") if eligible else "not_applicable")
         results.append({"id": frame["id"], "page": frame["page"], "role": frame["role"],
                         "group_id": frame.get("group_id"), "eligible_body": eligible,
                         "substantive_body": substantive, "match_status": status, "reasons": reasons,
@@ -277,6 +327,7 @@ def measure(pages, manifest=None, *, safe_bottom_margin=28.35, target_bottom_gap
                         "actual_bottom_slack": frame["y"] + frame["height"] - bounds["yMax"] if bounds else None,
                         "unused_height": frame["height"] - (bounds["yMax"] - bounds["yMin"]) if bounds else None,
                         "observed_text": observed,
+                        "line_break_status": line_break_status, "line_break_issues": line_break_issues,
                         "lines": [{k: v for k, v in line.items() if k != "words"} for line in lines]})
     report = {"schema_version": 1, "units": "pt", "measurement_source": "rendered_pdf_text_bounds",
               "page_count": len(pages), "target_page_count": target_pages,
@@ -287,6 +338,7 @@ def measure(pages, manifest=None, *, safe_bottom_margin=28.35, target_bottom_gap
               "pages": [], "blocks": results, "adjacent_body_gaps": [],
               "limitations": ["Text extraction does not establish font fidelity, visual centering, icon quality or editability.",
                               "Bounds describe extracted glyph boxes, not exact raster ink pixels.",
+                              "Chinese line-break issues are location hints from matched body text; inspect rendered glyphs to verify them.",
                               "Unknown or ambiguous matches require inspection; they are not acceptance passes."]}
     for page in pages:
         page_blocks = [b for b in results if b["page"] == page["page"]]
@@ -296,6 +348,7 @@ def measure(pages, manifest=None, *, safe_bottom_margin=28.35, target_bottom_gap
                       and not _generated_bullet(w, page_blocks)]
         known = (manifest is not None and bool(eligible) and not unassigned
                  and all(b["match_status"] in {"matched", "intentional_blank"} for b in eligible))
+        line_break_issues = [issue for block in eligible for issue in block["line_break_issues"]]
         safe_bottom = page["height"] - safe_bottom_margin
         def last_bottom(blocks):
             return max((b["ink_bounds"]["yMax"] for b in blocks
@@ -317,6 +370,9 @@ def measure(pages, manifest=None, *, safe_bottom_margin=28.35, target_bottom_gap
                                 "substantive_last_line_bottom": content_bottom if known else None,
                                 "substantive_bottom_gap": content_gap if known else None,
                                 "substantive_fill_status": _fit(content_gap, target_bottom_gap) if known else "unknown",
+                                "line_break_status": _line_break_status(line_break_issues, known,
+                                                                         any(b["match_status"] == "matched" for b in eligible)),
+                                "line_break_issues": line_break_issues,
                                 "unassigned_word_count": len(unassigned),
                                 "unassigned_text": " ".join(w["text"] for w in unassigned)})
         ordered = sorted(page_blocks, key=lambda b: (b["frame"]["y"], b["frame"]["x"]))
@@ -333,6 +389,9 @@ def measure(pages, manifest=None, *, safe_bottom_margin=28.35, target_bottom_gap
                                                   "visible_gap": gap, "status": status})
     report["all_text_line_count"] = sum(p["all_text_line_count"] for p in report["pages"])
     report["body_coverage"] = "matched" if all(p["body_coverage"] == "matched" for p in report["pages"]) and not any(b["page"] > len(pages) for b in results) else "unknown"
+    report["line_break_issues"] = [issue for block in results for issue in block["line_break_issues"]]
+    report["line_break_status"] = _line_break_status(report["line_break_issues"], report["body_coverage"] == "matched",
+                                                     any(b["eligible_body"] and b["match_status"] == "matched" for b in results))
     return report
 
 

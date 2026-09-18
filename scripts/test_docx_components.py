@@ -136,6 +136,56 @@ class ResumeComponentsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'vertically centered'):
             b.validate()
 
+    def test_mixed_language_text_has_explicit_native_line_breaking_rules(self):
+        b = ResumeBuilder()
+        b.add_section('虚构项目经历', y=60)
+        b.add_institution('示例机构', '虚构方向', 'Owner', '20XX', y=94)
+        paragraph = b.add_block('bullet', [
+            {'text': '负责 AtlasFlow 的实验反馈迭代，'},
+            {'text': '以及跨任务检索（可追溯）的失败回退。'},
+            {'text': 'Pipeline', 'url': 'https://example.com/pipeline'}
+        ], y=130, width=240, level=0)
+        b.add_project_point('technical', '记录 Transformer 评测输入、输出及版本；复查缓存。',
+                            label='验证机制：', y=220, width=240)
+        original = ''.join(paragraph.paragraph._p.xpath('.//w:t/text()'))
+        root, _, _ = self.read_output(b)
+        with ZipFile(self.root / 'fictional.docx') as archive:
+            styles = etree.fromstring(archive.read('word/styles.xml'))
+            settings = etree.fromstring(archive.read('word/settings.xml'))
+        for props in root.xpath('//w:txbxContent/w:p/w:pPr', namespaces=NS):
+            self.assertEqual(props.xpath('./w:kinsoku/@w:val', namespaces=NS), ['1'])
+            self.assertEqual(props.xpath('./w:wordWrap/@w:val', namespaces=NS), ['1'])
+            self.assertEqual(props.xpath('./w:overflowPunct/@w:val', namespaces=NS), ['0'])
+        for run in root.xpath('//w:txbxContent//w:r[w:t]', namespaces=NS):
+            self.assertEqual(run.xpath('./w:rPr/w:lang/@w:eastAsia', namespaces=NS), ['zh-CN'])
+            self.assertEqual(run.xpath('./w:rPr/w:lang/@w:val', namespaces=NS), ['en-US'])
+        for xpath in ('./w:docDefaults/w:rPrDefault/w:rPr/w:lang',
+                      './w:style[@w:styleId="Normal"]/w:rPr/w:lang'):
+            self.assertEqual(styles.xpath(xpath + '/@w:eastAsia', namespaces=NS), ['zh-CN'])
+        self.assertEqual(settings.xpath('./w:themeFontLang/@w:eastAsia', namespaces=NS), ['zh-CN'])
+        # Preserve natural text and the existing hanging-indent scheme. Neither
+        # punctuation, Latin tokens, manual newlines nor spacer characters are rewritten.
+        saved = root.xpath('//w:txbxContent/w:p[.//w:t[contains(.,"负责 AtlasFlow")]]', namespaces=NS)[0]
+        self.assertEqual(''.join(saved.xpath('.//w:t/text()', namespaces=NS)), original)
+        self.assertFalse(root.xpath('//w:br | //w:cr', namespaces=NS))
+        levels = root.xpath('//w:pPr[w:numPr]', namespaces=NS)
+        self.assertEqual([p.xpath('./w:ind/@w:left', namespaces=NS)[0] for p in levels], ['142', '255'])
+        self.assertEqual([p.xpath('./w:ind/@w:hanging', namespaces=NS)[0] for p in levels], ['142', '142'])
+
+    def test_validation_catches_disabled_break_rules_and_lost_chinese_language(self):
+        for tag, value, message in (('w:kinsoku', '0', 'line-breaking'),
+                                     ('w:wordWrap', '0', 'line-breaking'),
+                                     ('w:overflowPunct', '1', 'line-breaking'),
+                                     ('w:lang', 'en-US', 'zh-CN')):
+            with self.subTest(tag=tag):
+                b = ResumeBuilder()
+                block = b.add_block('body', '虚构中文，包含 Pipeline 技术词。', y=80)
+                node = block.paragraph._p.xpath('.//' + tag)[0]
+                attr = 'eastAsia' if tag == 'w:lang' else 'val'
+                node.set('{%s}%s' % (NS['w'], attr), value)
+                with self.assertRaisesRegex(ValueError, message):
+                    b.validate()
+
     def test_multiline_cjk_estimate_covers_measured_render_regression(self):
         b = ResumeBuilder()
         text = '虚构系统用于演示长段落自然换行，所有内容均为组件测试。' * 6 + '末尾验证标记甲乙丙丁。'
