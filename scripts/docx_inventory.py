@@ -152,12 +152,71 @@ def relationships(archive, part):
     return result
 
 
+def summarize_structure(result):
+    """Describe logical paragraph ownership, not rendered lines or layout quality.
+
+    Indices refer to the existing, zero-based ``paragraphs`` list. Keep that
+    list unchanged for compatibility; whitespace-only entries are excluded
+    from these nonempty-paragraph statistics.
+    """
+    textboxes = {item["textbox_id"]: item for item in result["textboxes"]}
+    line_break_indices, body_indices, ordinary_body_indices = [], [], []
+    for index, paragraph in enumerate(result["paragraphs"]):
+        if not paragraph["text"].strip():
+            continue
+        context = paragraph["context"]
+        has_line_break = "\n" in paragraph["text"]
+        if has_line_break:
+            line_break_indices.append(index)
+        textbox_id = context["textbox_id"]
+        if textbox_id is not None:
+            textbox = textboxes[textbox_id]
+            textbox["paragraph_indices"].append(index)
+            if has_line_break:
+                textbox["line_break_paragraph_indices"].append(index)
+        elif context["story"] == "body":
+            body_indices.append(index)
+            if not context["in_table"]:
+                ordinary_body_indices.append(index)
+
+    for textbox in result["textboxes"]:
+        textbox["nonempty_paragraph_count"] = len(textbox["paragraph_indices"])
+        textbox["line_break_paragraph_count"] = len(textbox["line_break_paragraph_indices"])
+    multiple = [item["textbox_id"] for item in result["textboxes"]
+                if item["nonempty_paragraph_count"] > 1]
+    return {
+        "paragraph_index_base": 0,
+        "paragraph_index_source": "paragraphs",
+        "textbox_count": len(textboxes),
+        "nonempty_textbox_count": sum(bool(item["paragraph_indices"])
+                                      for item in result["textboxes"]),
+        "textbox_nonempty_paragraph_count": sum(item["nonempty_paragraph_count"]
+                                                for item in result["textboxes"]),
+        "multi_paragraph_textbox_count": len(multiple),
+        "multi_paragraph_textbox_ids": multiple,
+        "line_break_paragraph_count": len(line_break_indices),
+        "line_break_paragraph_indices": line_break_indices,
+        "body_nonempty_paragraph_count": len(body_indices),
+        "body_paragraph_indices": body_indices,
+        "ordinary_body_nonempty_paragraph_count": len(ordinary_body_indices),
+        "ordinary_body_paragraph_indices": ordinary_body_indices,
+        "limitations": [
+            "Counts use non-whitespace inline text in logical w:p paragraphs, after MC selection and accepted-view filtering.",
+            "Explicit w:br/w:cr stays inside its paragraph; automatic line wrapping is not a new paragraph.",
+            "Body counts exclude textboxes; ordinary body also excludes tables. Headers, footers, and notes are excluded from both.",
+            "Each textbox ID identifies one w:txbxContent in this inventory, not a persistent OOXML object ID.",
+            "These counts locate shared textboxes and explicit breaks; they do not establish independent movability, visibility, or layout quality.",
+        ],
+    }
+
+
 def inventory(filename):
     path = Path(filename).expanduser().resolve()
     raw = path.read_bytes()
     result = {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
               "paragraphs": [], "hyperlinks": [], "images": [], "anchors": [],
-              "vml_shapes": [], "math": [], "alternate_content": [], "warnings": []}
+              "vml_shapes": [], "math": [], "alternate_content": [], "warnings": [],
+              "textboxes": []}
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         names = set(archive.namelist())
         package_rels = relationships(archive, "")
@@ -196,7 +255,10 @@ def inventory(filename):
                     result["warnings"].append(f"{part}: missing target {rel['resolved_target']}")
                 return dict(rel)
 
+            textbox_number = 0
+
             def walk(node, context):
+                nonlocal textbox_number
                 context = dict(context)
                 if node.tag in {q("w", "footnote"), q("w", "endnote")}:
                     context["note_id"] = node.get(q("w", "id"))
@@ -206,7 +268,18 @@ def inventory(filename):
                     dp = node.find(q("wp", "docPr"))
                     context["shape_id"] = dp.get("id") if dp is not None else None
                 if node.tag == q("w", "txbxContent"):
+                    # Grouped drawings can share shape_id. Identify the actual
+                    # content node after branch/revision selection instead.
+                    textbox_number += 1
+                    parent_textbox_id = context["textbox_id"]
+                    context["textbox_id"] = f"{part}#textbox-{textbox_number}"
                     context["container"] = "textbox"
+                    result["textboxes"].append({
+                        "part": part, "textbox_id": context["textbox_id"],
+                        "parent_textbox_id": parent_textbox_id,
+                        "context": dict(context), "paragraph_indices": [],
+                        "line_break_paragraph_indices": [],
+                    })
                 base = {"part": part, "context": dict(context)}
                 if node.tag == q("w", "p"):
                     value = text_of(node)
@@ -249,9 +322,11 @@ def inventory(filename):
                 for child in node:
                     walk(child, context)
 
-            walk(root, {"story": story, "container": "body", "in_table": False})
+            walk(root, {"story": story, "container": "body", "in_table": False,
+                        "textbox_id": None})
+    result["structure_summary"] = summarize_structure(result)
     result["counts"] = {key: len(result[key]) for key in (
-        "paragraphs", "hyperlinks", "images", "anchors", "vml_shapes", "math")}
+        "paragraphs", "hyperlinks", "images", "anchors", "vml_shapes", "math", "textboxes")}
     result["warnings"] = sorted(set(result["warnings"]))
     return result
 
