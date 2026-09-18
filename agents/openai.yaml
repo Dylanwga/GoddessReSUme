@@ -1,0 +1,4 @@
+interface:
+  display_name: "GoddessReSUme"
+  short_description: "按定稿结构排版，从一段经历图标选择统一主题色，并专业化改写经历"
+  default_prompt: "使用 $goddessresume，专业化改写我的简历，按内置版式统一字体、栏目、文本框和对齐，并从一段经历图标选择整份简历的主题色，核对内容与排版。"
