@@ -5,15 +5,30 @@
 ## 能做什么
 
 - **经历专业化**：组织业务背景、技术难点、个人职责和成果；根据已确认事实明确项目 Owner 的责任范围。
-- **字体与字号对齐**：中文楷体，英文及数字 Times New Roman；姓名 20 pt、栏目 14 pt、机构抬头 11 pt、项目标题与正文 10.5 pt，落实到文字 run 并检查渲染时的字体替代。
+- **字体与字号对齐**：按唯一的 [版式规范](references/style-spec.md) 写入中西文字体和字号层级，并检查渲染时的字体替代。
 - **逐段独立文本框**：每个标题、正文段落、项目符号条目和论文条目分别成框，可单独移动；机构抬头与图标、条带保持合理分组。
-- **全宽栏目横线**：栏目标题下方配 2 pt 粗横线，横贯正文版心并与机构条带左右对齐，随标题文本框移动。
+- **全宽栏目横线**：栏目标题下方配粗横线，横贯正文版心并与机构条带左右对齐，随标题文本框移动。
 - **从经历图标取色**：选择一段经历的图标作为全篇主题来源，派生标题深色与条带浅色。
 - **查找并嵌入图标**：即使只有经历文字，也为实际学校、任职机构和联系平台搜索官方图标、下载验证后嵌入；不将个人项目误当任职机构。
 - **原生组件构建**：附带 Word 构建模块，复用字体、逐段文本框、原生两级编号、整条机构抬头和链接，减少每次从头实现的偏差。
 - **局部精修与补漏**：尊重最新手工修改，支持恢复缺失内容、补充图标、调整联系方式，并核对文字与版面。
 
 只改一句话时直接提供文案；整份 Word 简历润色、完整优化或生成时，同时执行字体写入、逐段拆框与内容检查。用户明确要求保留格式或只改局部时遵守其范围。专业化表达以已有事实为依据，不编造职责、指标或成果。
+
+## 两部分结构
+
+### 一、流程
+
+- **内容撰写**：提取事实、明确真实责任、组织专业表述、处理缺项，再交出内容单元。
+- **排版与格式**：获取图标与取色、应用原生组件、调整框高和分页、渲染全部页面。
+
+两块共享内容依据、版式依据和修改范围。文字决定对象与页面容量；需要精简时回到内容流程，保留事实与贡献。
+
+### 二、验收
+
+分别核对内容、格式与对象结构、逐页视觉和可用性。每项有证据与返修去向，区分通过、不通过、未验证和不适用；工具运行成功不等于成稿通过。
+
+流程与验收共同引用一份版式规范。图标获取、构建接口和 Word 精修是按需读取的技术参考，避免在各文件重复维护字号和配色。
 
 ## 安装
 
@@ -61,12 +76,14 @@ Word 文件处理需要可用的 DOCX 编辑、字体和渲染能力；若环境
 
 | 文件 | 用途 |
 | --- | --- |
-| [SKILL.md](SKILL.md) | 工作范围、事实边界与内容/版式验收要求 |
-| [references/writing.md](references/writing.md) | 专业化表达与职责、成果的写法 |
-| [references/layout.md](references/layout.md) | 字体、配色、尺寸、间距和对齐规范 |
-| [references/word-editing.md](references/word-editing.md) | Word 编辑、补漏与渲染检查 |
+| [SKILL.md](SKILL.md) | 两部分入口、任务范围和流程衔接 |
+| [references/workflow-content.md](references/workflow-content.md) | 内容撰写流程、Owner 边界与技术表达示例 |
+| [references/workflow-layout.md](references/workflow-layout.md) | 排版与格式流程、局部路径和渲染交接 |
+| [references/acceptance.md](references/acceptance.md) | 独立验收、检查证据、清点工具与返修规则 |
+| [references/style-spec.md](references/style-spec.md) | 唯一版式参数：字体、配色、尺寸、对象结构与脱敏参考 |
+| [references/word-editing.md](references/word-editing.md) | 最新 DOCX 的局部精修与 OOXML 操作 |
 | [references/icons.md](references/icons.md) | 图标的官方搜索、下载、验证、嵌入与缺失处理 |
-| [references/construction.md](references/construction.md) | 从内容到原生 Word 组件的构建与分页流程 |
+| [references/construction.md](references/construction.md) | 原生 Word 组件 API、输入与能力边界 |
 | [scripts/docx_components.py](scripts/docx_components.py) | 独立文本框、机构条带、编号和图标链接构建模块 |
 | [scripts/docx_inventory.py](scripts/docx_inventory.py) | 只读 DOCX 内容与对象清点工具 |
 | [agents/openai.yaml](agents/openai.yaml) | Codex 展示名称和默认调用提示 |
