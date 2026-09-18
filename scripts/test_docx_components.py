@@ -4,6 +4,7 @@ Run with the bundled Python: python -m unittest discover -s scripts -p 'test_doc
 These checks cover editing structure and content preservation, not visual QA.
 """
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from zipfile import ZipFile
@@ -170,6 +171,161 @@ class ResumeComponentsTest(unittest.TestCase):
         for unsupported in ([{'text': '虚构机构'}], '虚构机构\t示例方向'):
             with self.assertRaisesRegex(ValueError, 'use add_institution'):
                 b.add_block('institution', unsupported)
+
+    def test_education_defaults_keep_two_independent_editable_detail_boxes(self):
+        b = ResumeBuilder()
+        entry = b.add_education('虚构大学', '示例专业', '本科', '20XX—20XX', logo_path=self.icon, y=80)
+        self.assertEqual(len(entry.details), 2)
+        self.assertEqual(entry.field_names, ('academic', 'activities'))
+        self.assertTrue(all(block.metadata['education_missing'] for block in entry.details))
+        self.assertTrue(all(block.height == 20 for block in entry.details))
+        self.assertIn('毕业设计 / 指导教师：', entry.details[0].paragraph.text)
+        root, _, _ = self.read_output(b)
+        self.assertEqual(len(root.xpath('//wp:anchor', namespaces=NS)), 3)
+        self.assertEqual(len(root.xpath('//wpg:wgp', namespaces=NS)), 1)
+        self.assertEqual(len(root.xpath('//wpg:wgp//w:txbxContent', namespaces=NS)), 1)
+        self.assertEqual(len(root.xpath('//w:txbxContent', namespaces=NS)), 3)
+        self.assertEqual(b.validate()['education_entries'], 1)
+        self.assertAlmostEqual(entry.bottom, entry.details[-1].bottom)
+        previous_second_y = entry.details[1].y
+        b.move_block(entry.details[0], y=115)
+        self.assertAlmostEqual(entry.details[1].y, previous_second_y)
+        self.assertAlmostEqual(entry.band.y, 80)
+
+    def test_education_partial_complete_and_explicit_no_reservation(self):
+        cases = [
+            ({'academic_info': '示例研究方向'}, 2, [False, True]),
+            ({'academic_info': '示例研究方向', 'activities': '示例社团活动'}, 2, [False, False]),
+            ({'reserve_missing': False}, 0, []),
+            ({'reserve_missing': False, 'activities': '示例社团活动'}, 1, [False]),
+        ]
+        for options, count, missing in cases:
+            with self.subTest(options=options):
+                b = ResumeBuilder()
+                entry = b.add_education('虚构大学', degree='硕士', y=80, **options)
+                self.assertEqual(len(entry.details), count)
+                self.assertEqual([d.metadata['education_missing'] for d in entry.details], missing)
+                root, _, _ = self.read_output(b)
+                text = ''.join(root.xpath('//w:t/text()', namespaces=NS))
+                for supplied in (options.get('academic_info'), options.get('activities')):
+                    if supplied:
+                        self.assertEqual(text.count(supplied), 1)
+                self.assertEqual(len(root.xpath('//w:txbxContent', namespaces=NS)), 1 + count)
+
+    def test_education_cannot_silently_lose_associated_detail(self):
+        b = ResumeBuilder()
+        entry = b.add_education('虚构大学', degree='硕士', y=80)
+        removed = entry.details[0].anchor
+        removed.getparent().remove(removed)
+        with self.assertRaisesRegex(ValueError, 'Education academic detail textbox was removed'):
+            b.save(self.root / 'incomplete-education.docx')
+
+    def test_project_points_apply_and_validate_semantic_bullet_hierarchy(self):
+        b = ResumeBuilder()
+        blocks = []
+        for index, kind in enumerate(('background', 'responsibility', 'technical', 'result')):
+            block = b.add_project_point(kind, '调用者提供的虚构示例内容。', y=80 + index * 40)
+            blocks.append(block)
+            self.assertEqual(block.paragraph._p.xpath('./w:pPr/w:numPr/w:ilvl/@w:val'),
+                             ['1' if kind == 'technical' else '0'])
+            if kind == 'responsibility':
+                self.assertTrue(all(run.bold for run in block.paragraph.runs))
+        root, _, _ = self.read_output(b)
+        self.assertEqual(len(root.xpath('//w:numPr', namespaces=NS)), 4)
+        self.assertEqual(len(root.xpath('//w:txbxContent', namespaces=NS)), 4)
+        blocks[2].paragraph._p.xpath('./w:pPr/w:numPr/w:ilvl')[0].set('{%s}val' % NS['w'], '0')
+        with self.assertRaisesRegex(ValueError, 'technical requires native bullet level 1'):
+            b.validate()
+
+    def test_measured_body_layout_reduces_geometry_without_changing_text_or_spacing(self):
+        b = ResumeBuilder()
+        text = '虚构系统用于演示长段落自然换行，所有内容均为组件测试。' * 6 + '末尾验证标记甲乙丙丁。'
+        block = b.add_block('body', text, width=300, y=100)
+        old_height = block.height
+        old_paragraph = etree.tostring(block.paragraph._p)
+        b.set_body_layout(block, rendered_ink_bottom=121.42, rendered_lines=7)
+        self.assertLess(block.height, old_height)
+        self.assertGreater(block.height, 121.42)
+        self.assertEqual(etree.tostring(block.paragraph._p), old_paragraph)
+        self.assertEqual(block.metadata['body_layout']['source'], 'rendered_ink_bottom')
+        self.assertTrue(block.metadata['body_layout']['requires_rerendering'])
+        following = b.add_block('body', '后续虚构段落', y=300)
+        b.move_block(following, y=block.next_y())
+        self.assertAlmostEqual(following.y - block.bottom, .5)
+        self.read_output(b)
+
+    def test_one_page_report_distinguishes_estimates_from_render_measurements(self):
+        b = ResumeBuilder()
+        block = b.add_block('body', '虚构内容', y=700, height=20)
+        estimate = b.one_page_report()
+        self.assertEqual(estimate['target_pages'], 1)
+        self.assertEqual(estimate['density_status'], 'unknown')
+        self.assertEqual(estimate['estimated_page_count'], estimate['page_count'])
+        self.assertEqual(estimate['page_count_source'], 'builder_page_structure')
+        self.assertFalse(estimate['visual_acceptance_proven'])
+        self.assertEqual(b.one_page_report(rendered_content_bottom=b.safe_bottom - 20)['density_status'], 'unknown')
+        self.assertEqual(b.one_page_report(rendered_page_count=1)['density_status'], 'unknown')
+        for remaining, status in ((20, 'within_density_target'), (100, 'underfilled'),
+                                  (5, 'too_close_to_bottom'), (-2, 'overflow')):
+            report = b.one_page_report(rendered_content_bottom=b.safe_bottom - remaining, rendered_page_count=1)
+            self.assertEqual(report['density_status'], status)
+            self.assertFalse(report['visual_acceptance_proven'])
+        # A renderer can add a page even though the builder has only one host.
+        self.assertEqual(b.one_page_report(rendered_content_bottom=b.safe_bottom - 20,
+                                          rendered_page_count=2)['density_status'], 'overflow')
+        self.assertEqual(b.one_page_report(target_pages=2, rendered_content_bottom=b.safe_bottom - 20,
+                                          rendered_page_count=1)['density_status'], 'page_count_mismatch')
+        for invalid_count in (0, 1.5, True):
+            with self.assertRaisesRegex(ValueError, 'rendered_page_count'):
+                b.one_page_report(rendered_page_count=invalid_count)
+        extra = b.add_block('body', '虚构第二页内容', page=2, y=50)
+        self.assertTrue(b.one_page_report()['estimated_overflow'])
+        self.assertEqual(b.one_page_report(rendered_content_bottom=b.safe_bottom - 20,
+                                          rendered_page_count=1)['density_status'], 'page_count_mismatch')
+        b.move_block(extra, page=1, y=block.next_y())
+        self.assertEqual(b.one_page_report()['page_count'], 1)
+        self.read_output(b)
+
+    def test_manifest_preserves_hyperlinked_text_run_tabs_and_semantic_associations(self):
+        b = ResumeBuilder()
+        header = b.add_project_header('虚构项目', repo_url='https://example.com/repo',
+                                      repo_label='example.com/repo', icon_path=self.icon, y=80)
+        point = b.add_project_point('technical', '示例实现内容。', y=110)
+        point.metadata['group_id'] = 'fictional-project-a'
+        education = b.add_education('虚构大学', '示例专业', '硕士', '20XX',
+                                     academic_info='示例研究方向', y=150)
+        manifest = b.layout_manifest()
+        json.dumps(manifest, ensure_ascii=False)  # suitable for an external renderer/measurement script
+        records = {row['id']: row for row in manifest['blocks']}
+        header_record = records[header.anchor.find('wp:docPr', NS).get('name')]
+        self.assertEqual(header_record['text'], '虚构项目\t example.com/repo')
+        point_record = records[point.anchor.find('wp:docPr', NS).get('name')]
+        self.assertEqual(point_record['semantic_kind'], 'technical')
+        self.assertEqual(point_record['group_id'], 'fictional-project-a')
+        band_record = records[education.band.anchor.find('wp:docPr', NS).get('name')]
+        self.assertEqual(band_record['text'], '虚构大学\t示例专业\t硕士\t20XX')
+        academic = records[education.details[0].anchor.find('wp:docPr', NS).get('name')]
+        placeholder = records[education.details[1].anchor.find('wp:docPr', NS).get('name')]
+        self.assertEqual(academic['role'], 'education_detail')
+        self.assertFalse(academic['intentional_blank'])
+        self.assertEqual(placeholder['role'], 'education_placeholder')
+        self.assertTrue(placeholder['intentional_blank'])
+        self.assertEqual(len(records), len(b.blocks))
+
+    def test_education_details_support_measured_body_layout_and_manifest_refresh(self):
+        b = ResumeBuilder()
+        education = b.add_education('虚构大学', degree='本科', y=80)
+        detail = education.details[0]
+        self.assertEqual(detail.role, 'body')
+        b.set_body_layout(detail, rendered_ink_bottom=15, bottom_padding=1, safety_margin=.5)
+        b.move_block(detail, y=112)
+        record = next(row for row in b.layout_manifest()['blocks']
+                      if row['id'] == detail.anchor.find('wp:docPr', NS).get('name'))
+        self.assertEqual(record['role'], 'education_placeholder')
+        self.assertAlmostEqual(record['height'], 16.5)
+        self.assertAlmostEqual(record['y'], 112)
+        self.assertTrue(record['intentional_blank'])
+        b.validate()
 
 
 if __name__ == '__main__':

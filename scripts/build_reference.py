@@ -6,6 +6,9 @@ Pillow draws original illustrative icons; they are not real institution logos.
 Render and inspect every page after building. See references/acceptance.md.
 """
 import argparse
+import json
+import re
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 import posixpath
@@ -87,96 +90,104 @@ def clean_package(path):
             archive.writestr(name, data)
 
 
-def build(output):
+def build(output, *, manifest=None, metrics=None):
+    """Build a single fictional page; optional metrics tighten body frames.
+
+    Measurements are reused only when the complete rendered text still matches.
+    Re-render after tightening and inspect coverage, spacing and density.
+    """
     output = Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    measured = {}
+    if metrics:
+        report = json.loads(Path(metrics).read_text(encoding='utf-8'))
+        measured = {item['id']: item for item in report['blocks']}
     with tempfile.TemporaryDirectory(prefix='goddessresume-fictional-') as tmp:
         ico = icons(Path(tmp))
         b = ResumeBuilder(theme='2F6FBA')
         props = b.document.core_properties
         props.title = 'GoddessReSUme 虚构版式样例'
-        props.subject = '身份、机构、经历、论文、日期及图标均为虚构，仅演示可编辑版式'
+        props.subject = '全部身份、机构、经历、日期及图标均为虚构，仅演示可编辑版式'
         props.author = props.last_modified_by = 'GoddessReSUme'
         props.created = props.modified = datetime(2020, 1, 1, tzinfo=timezone.utc)
         b.add_block('name', '林知遥（虚构样例）', y=28, width=420, height=30)
-        b.add_photo_placeholder(x=485, y=29, width=76.3, height=98)
+        b.add_photo_placeholder(x=485, y=29, width=76.3, height=78)
         b.add_block('contact', [
             {'icon_path': ico['phone'], 'icon_height': 11}, {'text': ' 000-0000-0000'},
             {'text': ' ｜ '}, {'icon_path': ico['mail'], 'icon_height': 11},
             {'text': ' lin@example.com', 'url': 'mailto:lin@example.com'},
+            {'text': ' ｜ '}, {'icon_path': ico['repo'], 'icon_height': 11},
+            {'text': ' GitHub', 'url': 'https://example.com/profile'},
         ], y=63, width=440, height=22)
-        b.add_block('contact', [
-            {'icon_path': ico['repo'], 'icon_height': 11},
-            {'text': ' GitHub', 'url': 'https://example.com/profile'}, {'text': ' ｜ '},
-            {'icon_path': ico['scholar'], 'icon_height': 11},
-            {'text': ' Google Scholar', 'url': 'https://example.com/scholar'},
-        ], y=86, width=440, height=22)
         b.add_tech_stack('Python / Go｜FastAPI · React · Kafka', icon_path=ico['code'],
-                         y=109, width=440, height=22, font_size=10.5)
+                         y=87, width=440, height=22, font_size=10.5)
 
-        def paragraph(label, text, y, *, page=1, height=None, bullet=False, bold=False):
-            runs = [{'text': label, 'bold': True}, {'text': text, 'bold': bold}]
-            return b.add_block('bullet' if bullet else 'body', runs, page=page, y=y,
-                               height=height, level=0)
+        def tighten(block):
+            from docx.oxml.ns import qn
+            key = block.anchor.find(qn('wp:docPr')).get('name')
+            item = measured.get(key)
+            if item:
+                if item['match_status'] != 'matched':
+                    raise ValueError(f'Measured text is incomplete: {key}')
+                current = ''.join(n.text or '' for n in block.paragraph._p.iter(qn('w:t')))
+                normalize = lambda value: re.sub(r'\s+', '', unicodedata.normalize('NFKC', value))
+                if normalize(current) != normalize(item['observed_text']):
+                    return block  # Revised content needs a fresh, conservative render.
+                ink = item['ink_bounds']['yMax'] - item['frame']['y']
+                b.set_body_layout(block, rendered_ink_bottom=ink)
+            return block
 
-        sec = b.add_section('教育背景', y=145)
-        band = b.add_institution('星澜大学（虚构）', '计算机科学与技术', '硕士', '2023—2026',
-                                 logo_path=ico['school'], y=sec.bottom + 4, tab_stops=(184, 355, 524.3))
-        line = paragraph('研究方向：', '面向开发者工具的智能体协作；导师：周知衡教授（虚构）。', band.bottom + 3)
-        band = b.add_institution('星澜大学（虚构）', '软件工程', '本科', '2019—2023',
-                                 logo_path=ico['school'], y=line.bottom + 7, tab_stops=(184, 355, 524.3))
-        line = paragraph('在校经历：', '参与校内开源社团，组织代码阅读与工程实践活动。', band.bottom + 3)
+        def education(y, degree, dates, detail):
+            entry = b.add_education('星澜大学（虚构）', detail, degree, dates,
+                logo_path=ico['school'], y=y, tab_stops=(184, 355, 524.3))
+            previous = entry.band
+            for i, block in enumerate(entry.details):
+                b.move_block(block, y=previous.next_y(1 if i == 0 else .5))
+                tighten(block)
+                block.metadata['group_id'] = 'education-' + degree
+                previous = block
+            return entry
 
-        sec = b.add_section('项目经历', y=line.bottom + 12)
+        sec = b.add_section('教育背景', y=119)
+        masters = education(sec.next_y(4), '硕士', '2023—2026', '计算机科学与技术')
+        bachelors = education(masters.next_y(7), '本科', '2019—2023', '软件工程')
+        sec = b.add_section('项目经历', y=bachelors.next_y(10))
         band = b.add_institution('云舟科技（虚构）', '平台研发', '实习生', '2025.03—2025.09',
-                                 logo_path=ico['company'], y=sec.bottom + 4, tab_stops=(184, 355, 524.3))
-        title = b.add_project_header('AtlasFlow：研发任务协作平台（虚构）', repo_url='https://example.com/projects/atlasflow',
-                                     repo_label='GitHub', icon_path=ico['repo'], y=band.bottom + 3)
-        line = paragraph('项目背景：', '面向多角色研发任务中信息分散与交接成本高的问题，构建任务拆解、执行跟踪和结果归档的一体化工作流。', title.bottom, height=36)
-        line = paragraph('项目职责：', '作为项目 Owner，负责已约定范围内的流程建模与服务接口设计，协调客户端和执行服务的联调验证。', line.next_y(1), height=36, bold=True)
-        line = paragraph('执行编排：', '将任务状态、工具调用和异常恢复组织为可追踪流程，通过消息事件连接执行服务与结果存储。', line.next_y(1), height=20, bullet=True)
-        line = paragraph('质量验证：', '建立固定样例与失败分类，检查超时重试、重复事件和中断恢复，并以执行日志定位交接环节的问题。', line.next_y(1), height=36, bullet=True)
-        line = paragraph('项目产出：', '交付接口说明、复现脚本和验收样例，形成可继续扩展的任务执行原型。', line.next_y(1), height=20)
+            logo_path=ico['company'], y=sec.next_y(4), tab_stops=(184, 355, 524.3))
 
-        title = b.add_project_header('TraceNest：安全事件关联工具（虚构）', repo_url='https://example.com/projects/tracenest',
-                                     repo_label='GitHub', icon_path=ico['repo'], y=line.bottom + 9)
-        line = paragraph('项目背景：', '针对告警上下文分散、人工排查重复的问题，聚合主机与网络事件，为分析人员提供可追溯的事件视图。', title.bottom, height=36)
-        line = paragraph('项目职责：', '作为项目 Owner，负责事件模型、关联接口和验证样例；将分析结论与对应证据一并保留。', line.next_y(1), height=20, bold=True)
-        line = paragraph('工程实现：', '使用 Go 接入事件流，结合 Kafka 处理异步消息；通过统一字段和关联标识连接检索结果与分析页面。', line.next_y(1), height=36, bullet=True)
-        paragraph('项目产出：', '形成事件检索与证据回溯原型，并整理边界条件与复现步骤。', line.next_y(1), height=20)
-
-        sec = b.add_section('科研经历', page=2, y=30)
-        band = b.add_institution('澄星研究院（虚构）', '智能系统研究组', '研究助理', '2024.10—2025.06',
-                                 logo_path=ico['lab'], page=2, y=sec.bottom + 4, tab_stops=(184, 355, 524.3))
-        title = b.add_project_header('FlexRoute：约束条件下的任务路由（虚构）', repo_url='https://example.com/research/flexroute',
-                                     repo_label='GitHub', icon_path=ico['repo'], page=2, y=band.bottom + 3)
-        line = paragraph('研究背景：', '面向工具成本和响应时限不同的任务，探索在资源预算内选择执行路径，避免统一路由策略造成不必要的调用。', title.bottom, page=2, height=36)
-        line = paragraph('个人职责：', '负责路由策略原型和评测流程，将任务约束、候选路径与失败恢复条件表示为可重复执行的配置。', line.next_y(1), page=2, height=20, bold=True)
-        line = paragraph('方法设计：', '按任务难度与可用工具建立分层决策过程，对比静态规则与动态选择，并保留路径选择的解释信息。', line.next_y(1), page=2, height=20, bullet=True)
-        line = paragraph('实验分析：', '固定数据划分、调用预算和评估脚本，分别分析完成率、耗时与调用成本，定位收益来自哪些任务类型。', line.next_y(1), page=2, height=36, bullet=True)
-        line = paragraph('研究产出：', '整理实验配置、失败案例和消融结论，形成内部研究报告与可复现实验包。', line.next_y(1), page=2, height=20)
-
-        title = b.add_project_header('CacheWeave：多阶段检索缓存（虚构）', repo_url='https://example.com/research/cacheweave',
-                                     repo_label='GitHub', icon_path=ico['repo'], page=2, y=line.bottom + 10)
-        line = paragraph('研究背景：', '针对连续查询中重复检索和上下文重建的开销，探索可复用中间结果及其失效条件，兼顾响应效率与结果一致性。', title.bottom, page=2, height=36)
-        line = paragraph('个人职责：', '负责缓存键设计和一致性验证，分析数据更新、查询变化与中间结果复用之间的约束关系。', line.next_y(1), page=2, height=20, bold=True)
-        line = paragraph('系统实现：', '按检索阶段组织缓存记录，保留来源版本与依赖关系；在数据变化时失效关联条目，并记录命中与重算原因。', line.next_y(1), page=2, height=36, bullet=True)
-        line = paragraph('验证方式：', '构造重复查询、数据更新及并发访问样例，对照无缓存路径核对结果一致性，输出可定位的差异记录。', line.next_y(1), page=2, height=36, bullet=True)
-
-        sec = b.add_section('论文与研究记录', page=2, y=line.bottom + 12)
-        entries = [
-            ('Lin Zhiyao', ', Zhou Zhiheng. FlexRoute: Budget-Aware Task Routing. 虚构研究报告，2025。', 'https://example.com/papers/flexroute'),
-            ('Lin Zhiyao', ', Chen Shuyi. CacheWeave: Reusable Retrieval States. 虚构研究报告，2025。', 'https://example.com/papers/cacheweave'),
+        projects = [
+            ('atlasflow', 'AtlasFlow：研发任务协作平台（虚构）', [
+                ('background', '项目背景：', '面向跨角色研发任务中信息分散、状态难以同步和交接成本高的问题，构建连接任务拆解、执行跟踪与结果归档的协作工作流。', 34.2),
+                ('responsibility', '项目职责：', '作为项目 Owner，负责流程建模与服务接口设计，拆解客户端和执行服务的接口边界，组织联调与异常场景验收。', 34.2),
+                ('technical', '执行编排：', '以任务状态机串联规划、执行和复核环节，通过消息事件传递进度与执行结果；对中断任务保留检查点，支持恢复后继续执行。', 34.2),
+                ('technical', '接口设计：', '使用 Python 与 FastAPI 封装任务及工具接口，以统一标识关联输入、执行日志和产物；为客户端提供状态查询及结果回溯能力。', 34.2),
+                ('technical', '质量验证：', '建立固定任务集与失败分类，覆盖超时重试、重复事件和中断恢复；对照预期状态检查执行链路，并以日志定位交接环节的问题。', 34.2),
+                ('result', '项目产出：', '交付可运行原型、接口说明与复现脚本；将联调中的失败样例沉淀为回归用例，为接入新工具和迭代流程提供可重复的验收基线。', 34.2),
+            ]),
+            ('tracenest', 'TraceNest：安全事件关联工具（虚构）', [
+                ('background', '项目背景：', '针对告警上下文分散、重复人工检索和证据交接困难的问题，聚合主机与网络事件，为分析人员提供可追溯的事件调查视图。', 34.2),
+                ('responsibility', '项目职责：', '作为项目 Owner，负责事件模型、关联接口与分析页面的设计，明确证据保留要求，组织端到端联调及边界条件验证。', 34.2),
+                ('technical', '事件接入：', '使用 Go 接入事件流，通过 Kafka 处理异步消息；统一时间、主体和来源字段，以关联标识连接原始记录、检索结果与调查对象。', 34.2),
+                ('technical', '证据呈现：', '以 React 构建事件时间线和证据详情页，将分析结论与对应来源一并展示；保留查询条件和原始记录入口，便于复核关联依据。', 34.2),
+                ('technical', '工程验证：', '针对迟到消息、重复事件和缺失字段构造测试样例，核对检索结果及页面展示的一致性；整理异常处理规则与数据接入约束。', 34.2),
+                ('result', '项目产出：', '完成事件检索与证据回溯原型，提交数据接入说明和可复现验证样例；以事件时间线串联调查过程，支持分析人员复核证据及交接结论。', 34.2),
+            ]),
         ]
-        y = sec.bottom + 3
-        for i, (author, rest, url) in enumerate(entries, 1):
-            line = b.add_block('citation', [{'text': f'[{i}] '}, {'text': author, 'bold': True, 'color': b.theme},
-                  {'text': rest, 'italic': True}, {'text': ' 链接', 'url': url}], page=2, y=y, height=22)
-            y = line.next_y(2)
-        b.add_block('body', '说明：本样例的全部资料与标识均为虚构，仅供版式参考；正式简历应使用真实资料和机构图标。',
-                    page=2, y=y + 8, font_size=10.5, height=36, color='666666')
+        previous = band
+        for index, (slug, title_text, points) in enumerate(projects):
+            title = b.add_project_header(title_text, repo_url='https://example.com/projects/' + slug,
+                repo_label='GitHub', icon_path=ico['repo'], height=22,
+                y=previous.next_y(3 if index == 0 else 7))
+            previous = title
+            for kind, label, text, initial_height in points:
+                block = b.add_project_point(kind, text, label=label,
+                    y=previous.next_y(.5), height=initial_height)
+                block.metadata['group_id'] = slug
+                previous = tighten(block)
         report = b.validate()
         b.save(output)
+        if manifest:
+            Path(manifest).write_text(json.dumps(b.layout_manifest(), ensure_ascii=False, indent=2), encoding='utf-8')
     clean_package(output)
     print(output)
     print(report)
@@ -186,4 +197,7 @@ def build(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', nargs='?', type=Path, default=Path(__file__).resolve().parents[1] / 'assets/layout-reference.docx')
-    build(parser.parse_args().output)
+    parser.add_argument('--manifest', type=Path, help='Export frame geometry and complete text for rendered measurement')
+    parser.add_argument('--metrics', type=Path, help='Use matching previous-render measurements to tighten body frames')
+    args = parser.parse_args()
+    build(args.output, manifest=args.manifest, metrics=args.metrics)

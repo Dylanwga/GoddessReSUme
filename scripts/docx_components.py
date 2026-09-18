@@ -33,6 +33,7 @@ ROLES = {"name", "section", "project", "body", "bullet", "citation", "contact",
 SIZES = {"name": 20, "section": 14, "institution": 11, "contact": 11}
 MIN_HEIGHTS = {"name": 36, "section": 26, "institution": 26, "project": 24,
                "project_header": 24, "contact": 22, "tech_stack": 22}
+GAPS = {"within_project": .5, "between_projects": 7, "between_sections": 10}
 
 
 def _element(tag, attributes=None, parent=None):
@@ -148,7 +149,28 @@ class Block:
     def bottom(self):
         return self.y + self.height
 
-    def next_y(self, gap=2):
+    def next_y(self, gap=.5):
+        return self.bottom + _number(gap, "gap")
+
+
+@dataclass
+class EducationBlock:
+    """Logical association only: details remain independent native textboxes."""
+
+    band: Block
+    details: tuple
+    field_names: tuple
+    reserve_missing: bool
+
+    @property
+    def page(self):
+        return self.band.page
+
+    @property
+    def bottom(self):
+        return max([self.band.bottom] + [block.bottom for block in self.details])
+
+    def next_y(self, gap=.5):
         return self.bottom + _number(gap, "gap")
 
 
@@ -178,7 +200,7 @@ class ResumeBuilder:
         self.theme = _hex(theme if theme is not None else "4A5568")
         self.dark = "".join(f"{round(int(self.theme[i:i + 2], 16) * .8):02X}" for i in (0, 2, 4))
         self.east_asia_font, self.western_font = east_asia_font, western_font
-        self.blocks, self._pages, self._next_id = [], {}, 1
+        self.blocks, self.educations, self._pages, self._next_id = [], [], {}, 1
         self._numbering_id = self._numbering()
         normal = self.document.styles["Normal"]
         normal.font.size = Pt(10.5)
@@ -578,8 +600,72 @@ class ResumeBuilder:
         return self._attach("project_header", page, x, y, width, height, shape, paragraph, identifier,
                             {"repository_url": repo_url, "estimated_line_width": required})
 
+    def add_education(self, name, detail="", degree="", dates="", *, academic_info="",
+                      activities="", academic_label=None, activities_label="在校活动 / 荣誉：",
+                      reserve_missing=True, band_gap=1, detail_gap=.5,
+                      detail_line_height=16, **institution_placement):
+        """Institution band plus two independently editable education details.
+
+        Missing details retain their labels and an editable blank by default.
+        reserve_missing=False omits only fields with no supplied information.
+        All remaining placement/logo options are passed to add_institution().
+        """
+        if not isinstance(reserve_missing, bool):
+            raise ValueError("reserve_missing must be a boolean")
+        if not all(isinstance(v, str) for v in (academic_info, activities, activities_label)):
+            raise ValueError("Education detail values and labels must be strings")
+        if academic_label is None:
+            academic_label = "毕业设计 / 指导教师：" if any(s in degree for s in ("本科", "学士")) else "导师 / 研究方向："
+        if not isinstance(academic_label, str):
+            raise ValueError("academic_label must be a string")
+        _number(band_gap, "band_gap")
+        _number(detail_gap, "detail_gap")
+        _number(detail_line_height, "detail_line_height", positive=True)
+        # Validate supplied logical units before adding any component.
+        for label, value in ((academic_label, academic_info), (activities_label, activities)):
+            _pieces([{"text": label}, {"text": value}])
+        band = self.add_institution(name, detail, degree, dates, **institution_placement)
+        blocks, field_names = [], []
+        next_y = band.next_y(band_gap)
+        for field_name, label, value in (("academic", academic_label, academic_info),
+                                         ("activities", activities_label, activities)):
+            if not value.strip() and not reserve_missing:
+                continue
+            block = self.add_block("body", [{"text": label, "bold": True},
+                                            {"text": value if value.strip() else " "}],
+                                   page=band.page, x=band.x, y=next_y, width=band.width,
+                                   line_height=detail_line_height)
+            block.metadata["education_field"] = field_name
+            block.metadata["education_missing"] = not bool(value.strip())
+            blocks.append(block)
+            field_names.append(field_name)
+            next_y = block.next_y(detail_gap)
+        education = EducationBlock(band, tuple(blocks), tuple(field_names), reserve_missing)
+        self.educations.append(education)
+        return education
+
     def add_contact(self, text, *, url=None, icon_path=None, **placement):
         return self.add_block("contact", {"text": text, "url": url}, icon_path=icon_path, **placement)
+
+    def add_project_point(self, kind, text, label=None, **placement):
+        """Apply semantic project hierarchy to caller-provided content only."""
+        kinds = {"background": (0, "项目背景："), "responsibility": (0, "项目职责："),
+                 "technical": (1, "技术实现："), "result": (0, "项目成果：")}
+        if kind not in kinds:
+            raise ValueError(f"Project point kind must be one of {tuple(kinds)}")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Project point text must contain supplied content")
+        level, default_label = kinds[kind]
+        if "level" in placement:
+            raise ValueError("Project point level is determined by its semantic kind")
+        label = default_label if label is None else label
+        if not isinstance(label, str):
+            raise ValueError("Project point label must be a string")
+        block = self.add_block("bullet", [{"text": label, "bold": True},
+                                          {"text": text, "bold": kind == "responsibility"}],
+                               level=level, **placement)
+        block.metadata["semantic_kind"] = kind
+        return block
 
     def add_tech_stack(self, items, *, icon_path=None, label="技术栈：", separator=" · ", **placement):
         """Use supplied project-relevant technologies without proficiency claims."""
@@ -597,7 +683,7 @@ class ResumeBuilder:
                             fill="EEEEEE", padding_y=0, vertical_anchor="ctr")
         return self._attach("photo_placeholder", page, x, y, width, height, shape, paragraph, identifier)
 
-    def next_position(self, block, *, gap=2, required_height=0):
+    def next_position(self, block, *, gap=.5, required_height=0):
         """Return explicit (page, y); keep a following block within safe margins.
 
         For a heading + first body unit, pass their combined required height.
@@ -609,6 +695,157 @@ class ResumeBuilder:
             raise ValueError("Required block/cluster is taller than the content area")
         y = block.next_y(gap)
         return (block.page + 1, top) if y + required_height > self.safe_bottom else (block.page, y)
+
+    def move_block(self, block, *, y, page=None, x=None):
+        """Move exactly one component after measuring its preceding content.
+
+        Education details are separate components; this does not move their
+        associated band or siblings. A section/institution local group moves
+        as one component without changing its internal layers.
+        """
+        if not any(candidate is block for candidate in self.blocks):
+            raise ValueError("Block does not belong to this builder")
+        _number(y, "y")
+        if x is not None:
+            _number(x, "x")
+            block.anchor.find(qn("wp:positionH")).find(qn("wp:posOffset")).text = str(_emu(x))
+        block.anchor.find(qn("wp:positionV")).find(qn("wp:posOffset")).text = str(_emu(y))
+        if page is not None and page != block.page:
+            new_host = self._page(page)
+            drawing = block.anchor.getparent()
+            run = drawing.getparent()
+            new_host._p.append(run)
+            block.page = page
+            # Remove newly empty trailing page hosts, preserving intermediate
+            # page numbers when later pages still contain content.
+            while len(self._pages) > 1:
+                last = max(self._pages)
+                host = self._pages[last]
+                if list(host._p.iter(qn("wp:anchor"))):
+                    break
+                host._p.getparent().remove(host._p)
+                del self._pages[last]
+        return block
+
+    def set_body_layout(self, block, *, rendered_ink_bottom=None, rendered_lines=None,
+                        line_pitch=17.75, bottom_padding=1, safety_margin=.5):
+        """Tighten a text component using an external render measurement.
+
+        rendered_ink_bottom is the final ink bottom in points relative to the
+        current box top. It takes precedence over the conservative line-count
+        fallback. Top padding and paragraph line spacing remain unchanged.
+        Re-render after changing geometry; this method cannot prove text fits.
+        """
+        if not any(candidate is block for candidate in self.blocks):
+            raise ValueError("Block does not belong to this builder")
+        if block.role not in {"body", "bullet", "citation"}:
+            raise ValueError("Measured body layout applies to body, bullet or citation textboxes")
+        _number(line_pitch, "line_pitch", positive=True)
+        _number(bottom_padding, "bottom_padding")
+        _number(safety_margin, "safety_margin")
+        if rendered_lines is not None and (isinstance(rendered_lines, bool) or not isinstance(rendered_lines, int) or rendered_lines < 1):
+            raise ValueError("rendered_lines must be a positive integer")
+        shape = block.anchor.find(".//" + qn("wps:wsp"))
+        body = shape.find(qn("wps:bodyPr"))
+        if rendered_ink_bottom is not None:
+            _number(rendered_ink_bottom, "rendered_ink_bottom", positive=True)
+            height = rendered_ink_bottom + bottom_padding + safety_margin
+            source = "rendered_ink_bottom"
+        elif rendered_lines is not None:
+            height = int(body.get("tIns", "0")) / 12700 + rendered_lines * line_pitch + bottom_padding + safety_margin
+            source = "rendered_line_count_estimate"
+        else:
+            raise ValueError("Provide rendered_ink_bottom or rendered_lines from an actual render")
+        block.anchor.find(qn("wp:extent")).set("cy", str(_emu(height)))
+        shape.find(qn("wps:spPr")).find(qn("a:xfrm")).find(qn("a:ext")).set("cy", str(_emu(height)))
+        body.set("bIns", str(_emu(bottom_padding)))
+        block.metadata["body_layout"] = {"source": source, "rendered_ink_bottom": rendered_ink_bottom,
+                                          "rendered_lines": rendered_lines, "requires_rerendering": True}
+        return block
+
+    def one_page_report(self, *, target_pages=1, bottom_whitespace_target=(12, 28),
+                        rendered_content_bottom=None, rendered_page_count=None):
+        """Report density and overflow; never stretch layout or invent content.
+
+        Box geometry is only a first estimate. Both measured page count and
+        content bottom from the actual render are required for a density status.
+        Structural checks and the rest of visual acceptance still apply.
+        """
+        if isinstance(target_pages, bool) or not isinstance(target_pages, int) or target_pages < 1:
+            raise ValueError("target_pages must be a positive integer")
+        if len(bottom_whitespace_target) != 2:
+            raise ValueError("bottom_whitespace_target requires a minimum and maximum")
+        minimum, maximum = bottom_whitespace_target
+        _number(minimum, "minimum bottom whitespace")
+        _number(maximum, "maximum bottom whitespace")
+        if minimum > maximum:
+            raise ValueError("Bottom whitespace range must increase")
+        if rendered_content_bottom is not None:
+            _number(rendered_content_bottom, "rendered_content_bottom")
+        if rendered_page_count is not None and (isinstance(rendered_page_count, bool)
+                or not isinstance(rendered_page_count, int) or rendered_page_count < 1):
+            raise ValueError("rendered_page_count must be a positive integer from the rendered PDF")
+        page_count = len(self._pages)
+        final_page = max((b.page for b in self.blocks), default=1)
+        estimated_bottom = max((b.bottom for b in self.blocks if b.page == final_page), default=0)
+        estimated_whitespace = self.safe_bottom - estimated_bottom
+        measured_whitespace = None if rendered_content_bottom is None else self.safe_bottom - rendered_content_bottom
+        if rendered_content_bottom is None or rendered_page_count is None:
+            status = "unknown"
+        elif rendered_page_count > target_pages or measured_whitespace < 0:
+            status = "overflow"
+        elif rendered_page_count != target_pages or rendered_page_count != page_count:
+            status = "page_count_mismatch"
+        elif measured_whitespace > maximum:
+            status = "underfilled"
+        elif measured_whitespace < minimum:
+            status = "too_close_to_bottom"
+        else:
+            status = "within_density_target"
+        return {"target_pages": target_pages, "page_count": page_count,
+                "estimated_page_count": page_count, "page_count_source": "builder_page_structure",
+                "rendered_page_count": rendered_page_count,
+                "bottom_whitespace_target": [minimum, maximum], "safe_bottom": self.safe_bottom,
+                "estimated_content_bottom": estimated_bottom, "estimated_bottom_whitespace": estimated_whitespace,
+                "estimated_overflow": page_count > target_pages or estimated_whitespace < 0,
+                "rendered_content_bottom": rendered_content_bottom, "rendered_bottom_whitespace": measured_whitespace,
+                "density_status": status, "visual_acceptance_proven": False,
+                "action": "Review render measurements; adjust spacing or substantiate content, never stretch boxes or invent facts"}
+
+    def layout_manifest(self):
+        """Export component geometry and complete XML text for render matching.
+
+        Text includes hyperlink descendants and actual run tabs, excluding tab
+        stop definitions. Education role aliases are for downstream inspection;
+        their underlying Blocks remain ordinary body textboxes and are accepted
+        by set_body_layout(). No candidate text is inferred or filled in here.
+        """
+        result = []
+        for block in self.blocks:
+            text = []
+            for node in block.paragraph._p.iter():
+                if node.tag == qn("w:t"):
+                    text.append(node.text or "")
+                elif node.tag == qn("w:tab") and node.getparent().tag == qn("w:r"):
+                    text.append("\t")
+                elif node.tag in {qn("w:br"), qn("w:cr")}:
+                    text.append("\n")
+            role = block.role
+            education_detail = "education_field" in block.metadata
+            missing = bool(block.metadata.get("education_missing", False))
+            if education_detail:
+                role = "education_placeholder" if missing else "education_detail"
+            item = {"id": block.anchor.find(qn("wp:docPr")).get("name"),
+                    "page": block.page, "x": block.x, "y": block.y,
+                    "width": block.width, "height": block.height,
+                    "role": role, "text": "".join(text)}
+            if education_detail:
+                item["intentional_blank"] = missing
+            for key in ("group_id", "semantic_kind"):
+                if key in block.metadata:
+                    item[key] = block.metadata[key]
+            result.append(item)
+        return {"blocks": result}
 
     @staticmethod
     def _institution_width_warnings(block):
@@ -638,7 +875,21 @@ class ResumeBuilder:
         """Check structural invariants and safe bounds; visual review is separate."""
         section = self.document.sections[0]
         warnings = []
+        attached_anchors = set(self.document.element.body.iter(qn("wp:anchor")))
+        active_blocks = {id(block) for block in self.blocks}
+        for education in self.educations:
+            if id(education.band) not in active_blocks or education.band.anchor not in attached_anchors:
+                raise ValueError("Education band was removed from its associated entry")
+            if len(education.details) != len(education.field_names) or (education.reserve_missing and len(education.details) != 2):
+                raise ValueError("Education requires its associated independent detail textboxes")
+            for field_name, detail in zip(education.field_names, education.details):
+                if id(detail) not in active_blocks or detail.anchor not in attached_anchors:
+                    raise ValueError(f"Education {field_name} detail textbox was removed")
+                if detail.metadata.get("education_field") != field_name:
+                    raise ValueError("Education detail association is inconsistent")
         for block in self.blocks:
+            if block.anchor not in attached_anchors:
+                raise ValueError(f"{block.role} component was removed from the document")
             if (block.x < 0 or block.y < 0 or block.x + block.width > section.page_width.pt + .01
                     or block.bottom > self.safe_bottom + .01):
                 raise ValueError(f"{block.role} on page {block.page} exceeds page/safe-bottom bounds")
@@ -647,6 +898,12 @@ class ResumeBuilder:
                 raise ValueError(f"{block.role} requires one textbox containing one paragraph")
             if list(boxes[0].iter(qn("w:br"))):
                 raise ValueError("Manual line breaks cannot combine logical content units")
+            semantic_kind = block.metadata.get("semantic_kind")
+            if semantic_kind:
+                expected_level = 1 if semantic_kind == "technical" else 0
+                level_node = block.paragraph._p.find(".//" + qn("w:ilvl"))
+                if block.role != "bullet" or level_node is None or level_node.get(qn("w:val")) != str(expected_level):
+                    raise ValueError(f"Project {semantic_kind} requires native bullet level {expected_level}")
             group = block.anchor.find(".//" + qn("wpg:wgp"))
             if block.role in {"section", "institution"}:
                 if group is None:
@@ -701,6 +958,7 @@ class ResumeBuilder:
                     raise ValueError(f"Unresolved document relationship {rid}")
         return {"pages": len(self._pages), "textboxes": len(self.blocks),
                 "native_groups": sum(b.role in {"section", "institution"} for b in self.blocks),
+                "education_entries": len(self.educations),
                 "requires_rendering": True, "measures_text_fit": False, "warnings": warnings}
 
     def save(self, path):
